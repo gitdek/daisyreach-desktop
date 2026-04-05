@@ -1,304 +1,260 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useWarehouseStore } from '../stores/warehouse';
-import type { Business } from '../types';
+import { useState, useEffect, useCallback } from 'react'
 
-interface LeadsProps {
-  onSelectLead?: (id: string) => void;
+interface Business {
+  id: string
+  name: string
+  address: string
+  phone: string | null
+  email: string | null
+  website: string | null
+  website_class: string | null
+  niche: string | null
+  locality: string | null
+  outreach_status: string | null
+  last_verdict: string | null
+  last_score: number | null
+  first_seen: string
+  last_checked: string
+  sourcing_model: Record<string, unknown> | null
 }
 
-function VerdictBadge({ verdict }: { verdict: string | null }) {
-  if (!verdict) return <span className="text-slate-500">—</span>;
-
-  const colors: Record<string, string> = {
-    GREENLIGHT: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-    CONDITIONAL: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-    BACKLOG: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-    SKIP: 'bg-red-500/20 text-red-400 border-red-500/30',
-  };
-
-  const cls = colors[verdict] || 'bg-slate-500/20 text-slate-400 border-slate-500/30';
-
-  return (
-    <span className={`inline-block px-2 py-0.5 text-xs font-medium rounded border ${cls}`}>
-      {verdict}
-    </span>
-  );
+interface WarehouseStats {
+  total_businesses: number
+  searches_run: number
+  greenlight: number
+  conditional: number
+  backlog: number
+  rejected: number
+  emailed: number
+  replied: number
+  quoted: number
+  won: number
+  pending_suggestions: number
+  query_types_used: number
+  query_types_total: number
+  neighborhoods_covered: number
+  neighborhoods_total: number
+  website_classes: Record<string, number>
 }
 
-function ScoreBadge({ score }: { score: number | null }) {
-  if (score === null || score === undefined) return <span className="text-slate-500">—</span>;
+export default function Leads() {
+  const [businesses, setBusinesses] = useState<Business[]>([])
+  const [stats, setStats] = useState<WarehouseStats | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const [totalCount, setTotalCount] = useState(0)
+  const pageSize = 50
 
-  const color = score >= 75 ? 'text-emerald-400' : score >= 50 ? 'text-amber-400' : 'text-red-400';
-
-  return <span className={`font-mono font-medium ${color}`}>{score}</span>;
-}
-
-export default function Leads({ onSelectLead }: LeadsProps) {
-  const {
-    businesses, total, stats, loading, error,
-    filters, fetchBusinesses, fetchStats, setFilter, setPage,
-  } = useWarehouseStore();
-
-  const [bridgeReady, setBridgeReady] = useState<boolean | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkEnriching, setBulkEnriching] = useState(false);
-  const [bulkResult, setBulkResult] = useState<string | null>(null);
-
-  const toggleSelect = useCallback((id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const selectAll = useCallback(() => {
-    if (selected.size === businesses.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(businesses.map((b) => String(b.id))));
-    }
-  }, [selected.size, businesses]);
-
-  const handleBulkEnrich = useCallback(async () => {
-    if (selected.size === 0) return;
-    setBulkEnriching(true);
-    setBulkResult(null);
+  const loadData = useCallback(async (offset = 0) => {
+    setLoading(true)
+    setError(null)
     try {
-      let enriched = 0;
-      for (const id of selected) {
-        await window.bridge.enrichSingle({ business_id: parseInt(id), depth: 'fast' });
-        enriched++;
-        setBulkResult(`Enriching... ${enriched}/${selected.size}`);
-      }
-      setBulkResult(`Done: ${enriched} leads enriched`);
-      fetchBusinesses();
-    } catch (err: any) {
-      setBulkResult(`Error: ${err.message}`);
+      const [listResult, statsResult] = await Promise.all([
+        window.bridge.warehouseList({ limit: pageSize, offset }),
+        window.bridge.warehouseStats(),
+      ])
+
+      const list = listResult as { businesses: Business[]; total: number }
+      const st = statsResult as WarehouseStats
+
+      setBusinesses(list.businesses || [])
+      setTotalCount(list.total || 0)
+      setStats(st)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load data')
     } finally {
-      setBulkEnriching(false);
+      setLoading(false)
     }
-  }, [selected, fetchBusinesses]);
-
-  const clearSelection = useCallback(() => {
-    setSelected(new Set());
-    setBulkResult(null);
-  }, []);
+  }, [])
 
   useEffect(() => {
-    fetchStats();
-  }, [fetchStats]);
+    loadData(page * pageSize)
+  }, [page, loadData])
 
-  useEffect(() => {
-    fetchBusinesses();
-  }, [filters.page, filters.niche, filters.locality, filters.verdict, fetchBusinesses]);
+  const totalPages = Math.ceil(totalCount / pageSize)
 
-  useEffect(() => {
-    const checkBridge = async () => {
-      try {
-        const status = await window.bridge.bridgeStatus();
-        setBridgeReady(status.ready);
-      } catch {
-        setBridgeReady(false);
-      }
-    };
-    checkBridge();
-    const interval = setInterval(checkBridge, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const getVerdictBadge = (biz: Business) => {
+    const verdict = biz.last_verdict
+    if (!verdict) return null
 
-  const totalPages = Math.ceil(total / filters.pageSize);
+    const colors: Record<string, string> = {
+      GREENLIGHT: 'bg-green-900/50 text-green-400 border-green-800',
+      CONDITIONAL: 'bg-yellow-900/50 text-yellow-400 border-yellow-800',
+      BACKLOG: 'bg-blue-900/50 text-blue-400 border-blue-800',
+      REJECT: 'bg-red-900/50 text-red-400 border-red-800',
+    }
+    return (
+      <span className={`px-1.5 py-0.5 text-[10px] font-medium border rounded ${colors[verdict] || 'bg-neutral-800 text-neutral-400'}`}>
+        {verdict}
+      </span>
+    )
+  }
+
+  const getScore = (biz: Business) => {
+    return biz.last_score ?? null
+  }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
-        <div>
-          <h1 className="text-xl font-semibold text-white">Leads</h1>
-          {stats && (
-            <p className="text-sm text-slate-400 mt-0.5">
-              {stats.total_leads ?? total} leads{' '}
-              {stats.by_verdict && Object.entries(stats.by_verdict).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {bridgeReady === false && (
-            <span className="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded">Bridge offline</span>
-          )}
-          {bridgeReady === true && (
-            <span className="px-2 py-1 text-xs bg-emerald-500/20 text-emerald-400 rounded">Connected</span>
-          )}
-        </div>
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-semibold text-white">Leads</h2>
+        <button
+          onClick={() => loadData(page * pageSize)}
+          className="px-3 py-1.5 text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded border border-neutral-700 transition-colors"
+        >
+          Refresh
+        </button>
       </div>
 
-      {/* Bulk action bar */}
-      {selected.size > 0 && (
-        <div className="flex items-center gap-3 px-6 py-2 bg-blue-500/10 border-b border-blue-500/20">
-          <span className="text-sm text-blue-300">{selected.size} selected</span>
-          <button
-            onClick={selectAll}
-            className="px-2 py-1 text-xs text-slate-300 bg-slate-800 rounded hover:bg-slate-700"
-          >
-            {selected.size === businesses.length ? 'Deselect All' : 'Select All'}
-          </button>
-          <button
-            onClick={handleBulkEnrich}
-            disabled={bulkEnriching}
-            className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-500 disabled:opacity-40"
-          >
-            {bulkEnriching ? '⟳ Enriching...' : 'Enrich Selected (Fast)'}
-          </button>
-          <button onClick={clearSelection} className="px-2 py-1 text-xs text-slate-400 hover:text-slate-200">
-            ✕
-          </button>
-          {bulkResult && <span className="text-xs text-slate-400">{bulkResult}</span>}
+      {/* Stats bar */}
+      {stats && (
+        <div className="grid grid-cols-5 gap-3 mb-6">
+          <StatCard label="Total" value={stats.total_businesses} />
+          <StatCard label="Greenlight" value={stats.greenlight} color="text-green-400" />
+          <StatCard label="Conditional" value={stats.conditional} color="text-yellow-400" />
+          <StatCard label="Emailed" value={stats.emailed} color="text-blue-400" />
+          <StatCard label="Searches" value={stats.searches_run} />
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex items-center gap-3 px-6 py-3 border-b border-slate-800 bg-slate-900/50">
-        <input
-          type="text"
-          placeholder="Niche..."
-          value={filters.niche}
-          onChange={(e) => setFilter('niche', e.target.value)}
-          className="px-3 py-1.5 text-sm bg-slate-800 border border-slate-700 rounded-md text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-40"
-        />
-        <input
-          type="text"
-          placeholder="Locality..."
-          value={filters.locality}
-          onChange={(e) => setFilter('locality', e.target.value)}
-          className="px-3 py-1.5 text-sm bg-slate-800 border border-slate-700 rounded-md text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-40"
-        />
-        <select
-          value={filters.verdict}
-          onChange={(e) => setFilter('verdict', e.target.value)}
-          className="px-3 py-1.5 text-sm bg-slate-800 border border-slate-700 rounded-md text-slate-200 focus:outline-none focus:border-blue-500"
-        >
-          <option value="">All verdicts</option>
-          <option value="GREENLIGHT">Greenlight</option>
-          <option value="CONDITIONAL">Conditional</option>
-          <option value="BACKLOG">Backlog</option>
-          <option value="SKIP">Skip</option>
-        </select>
-      </div>
-
-      {/* Error */}
+      {/* Error state */}
       {error && (
-        <div className="mx-6 mt-4 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
+        <div className="mb-4 p-3 bg-red-950/50 border border-red-900 rounded text-red-400 text-sm">
           {error}
+          <button onClick={() => loadData(page * pageSize)} className="ml-2 underline">
+            Retry
+          </button>
         </div>
       )}
 
       {/* Table */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-slate-900">
-            <tr className="text-left text-slate-400 text-xs uppercase tracking-wider">
-              <th className="px-3 py-3 w-8">
-                <input
-                  type="checkbox"
-                  checked={businesses.length > 0 && selected.size === businesses.length}
-                  onChange={selectAll}
-                  className="rounded border-slate-600 bg-slate-800"
-                />
-              </th>
-              <th className="px-6 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">Website</th>
-              <th className="px-4 py-3 font-medium text-center">Rating</th>
-              <th className="px-4 py-3 font-medium text-center">Score</th>
-              <th className="px-4 py-3 font-medium">Verdict</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800">
-            {loading && businesses.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
-                  Loading...
-                </td>
-              </tr>
-            ) : businesses.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
-                  No leads found
-                </td>
-              </tr>
-            ) : (
-              businesses.map((b: Business) => (
-                <tr
-                  key={b.id}
-                  onClick={() => onSelectLead?.(String(b.id))}
-                  className="hover:bg-slate-800/50 cursor-pointer transition-colors"
-                >
-                  <td className="px-3 py-3 w-8" onClick={(e) => toggleSelect(String(b.id), e)}>
-                    <input
-                      type="checkbox"
-                      checked={selected.has(String(b.id))}
-                      onChange={() => toggleSelect(String(b.id))}
-                      onClick={(e) => e.stopPropagation()}
-                      className="rounded border-slate-600 bg-slate-800"
-                    />
-                  </td>
-                  <td className="px-6 py-3 font-medium text-white">{b.name}</td>
-                  <td className="px-4 py-3 text-slate-400 max-w-[200px] truncate">
-                    {b.website_url || '—'}
-                  </td>
-                  <td className="px-4 py-3 text-center text-slate-300">
-                    {b.rating ? (
-                      <span>
-                        ★ {b.rating}
-                        <span className="text-slate-500 ml-1">({b.review_count ?? 0})</span>
-                      </span>
-                    ) : '—'}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <ScoreBadge score={b.activity_score} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <VerdictBadge verdict={b.sourcing_model?.verdict ?? null} />
-                  </td>
-                  <td className="px-4 py-3 text-slate-400">
-                    {b.outreach_status || '—'}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between px-6 py-3 border-t border-slate-800 bg-slate-900/50">
-          <span className="text-sm text-slate-400">
-            Showing {filters.page * filters.pageSize + 1}–{Math.min((filters.page + 1) * filters.pageSize, total)} of {total}
-          </span>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setPage(Math.max(0, filters.page - 1))}
-              disabled={filters.page === 0}
-              className="px-3 py-1 text-sm bg-slate-800 border border-slate-700 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              Prev
-            </button>
-            <span className="px-3 py-1 text-sm text-slate-400">
-              {filters.page + 1} / {totalPages}
-            </span>
-            <button
-              onClick={() => setPage(Math.min(totalPages - 1, filters.page + 1))}
-              disabled={filters.page >= totalPages - 1}
-              className="px-3 py-1 text-sm bg-slate-800 border border-slate-700 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
-          </div>
+      {loading ? (
+        <div className="text-center py-20 text-neutral-500 text-sm">Loading...</div>
+      ) : businesses.length === 0 ? (
+        <div className="text-center py-20 text-neutral-500 text-sm">
+          No leads in warehouse. Run a search to get started.
         </div>
+      ) : (
+        <>
+          <div className="border border-neutral-800 rounded overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-neutral-900 text-neutral-400 text-xs uppercase tracking-wider">
+                  <th className="text-left px-4 py-3 font-medium">Name</th>
+                  <th className="text-left px-4 py-3 font-medium">Location</th>
+                  <th className="text-center px-4 py-3 font-medium">Score</th>
+                  <th className="text-center px-4 py-3 font-medium">Verdict</th>
+                  <th className="text-center px-4 py-3 font-medium">Status</th>
+                  <th className="text-right px-4 py-3 font-medium">Found</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800/50">
+                {businesses.map((biz) => (
+                  <tr key={biz.id} className="hover:bg-neutral-900/50 transition-colors cursor-pointer">
+                    <td className="px-4 py-2.5">
+                      <span className="text-neutral-200 font-medium">{biz.name || 'Unknown'}</span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className="text-neutral-500 text-xs truncate block max-w-[200px]">
+                        {biz.locality || '—'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      {getScore(biz) !== null ? (
+                        <span className="text-neutral-300 font-mono text-xs">
+                          {getScore(biz)}
+                        </span>
+                      ) : (
+                        <span className="text-neutral-600">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      {getVerdictBadge(biz) || <span className="text-neutral-600">—</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-center">
+                      <StatusBadge status={biz.outreach_status} enriched={!!biz.last_enrichment_at} />
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <span className="text-neutral-600 text-xs">
+                        {biz.first_seen ? new Date(biz.first_seen).toLocaleDateString() : '—'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4 text-xs text-neutral-500">
+              <span>
+                Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, totalCount)} of {totalCount}
+              </span>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setPage(0)}
+                  disabled={page === 0}
+                  className="px-2 py-1 rounded bg-neutral-800 disabled:opacity-30 hover:bg-neutral-700 transition-colors"
+                >
+                  First
+                </button>
+                <button
+                  onClick={() => setPage(p => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="px-2 py-1 rounded bg-neutral-800 disabled:opacity-30 hover:bg-neutral-700 transition-colors"
+                >
+                  Prev
+                </button>
+                <span className="px-2 py-1">{page + 1} / {totalPages}</span>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="px-2 py-1 rounded bg-neutral-800 disabled:opacity-30 hover:bg-neutral-700 transition-colors"
+                >
+                  Next
+                </button>
+                <button
+                  onClick={() => setPage(totalPages - 1)}
+                  disabled={page >= totalPages - 1}
+                  className="px-2 py-1 rounded bg-neutral-800 disabled:opacity-30 hover:bg-neutral-700 transition-colors"
+                >
+                  Last
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
-  );
+  )
+}
+
+function StatCard({ label, value, color = 'text-neutral-200' }: { label: string; value: number; color?: string }) {
+  return (
+    <div className="bg-neutral-900 border border-neutral-800 rounded px-4 py-3">
+      <div className={`text-2xl font-bold ${color}`}>{value.toLocaleString()}</div>
+      <div className="text-xs text-neutral-500 mt-0.5">{label}</div>
+    </div>
+  )
+}
+
+function StatusBadge({ status }: { status: string | null }) {
+  if (!status || status === 'new') {
+    return <span className="px-1.5 py-0.5 text-[10px] bg-neutral-800 text-neutral-600 border border-neutral-700 rounded">new</span>
+  }
+  if (status === 'emailed' || status === 'sent') {
+    return <span className="px-1.5 py-0.5 text-[10px] bg-blue-900/50 text-blue-400 border border-blue-800 rounded">{status}</span>
+  }
+  if (status === 'replied') {
+    return <span className="px-1.5 py-0.5 text-[10px] bg-green-900/50 text-green-400 border border-green-800 rounded">{status}</span>
+  }
+  if (status === 'draft') {
+    return <span className="px-1.5 py-0.5 text-[10px] bg-purple-900/50 text-purple-400 border border-purple-800 rounded">{status}</span>
+  }
+  if (status === 'won') {
+    return <span className="px-1.5 py-0.5 text-[10px] bg-emerald-900/50 text-emerald-400 border border-emerald-800 rounded">{status}</span>
+  }
+  return <span className="px-1.5 py-0.5 text-[10px] bg-neutral-800 text-neutral-400 border border-neutral-700 rounded">{status}</span>
 }

@@ -1,7 +1,7 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
-import path from 'path';
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -13,11 +13,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@renderer': path.resolve(__dirname, 'src/renderer'),
+      '@renderer': resolve(__dirname, 'src/renderer'),
     },
   },
   server: {
     port: 5173,
     strictPort: true,
   },
-});
+})

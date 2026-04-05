@@ -1,182 +1,219 @@
-import { spawn, ChildProcess } from 'child_process';
-import * as path from 'path';
+import { spawn, ChildProcess } from 'child_process'
+import { EventEmitter } from 'events'
+import { app } from 'electron'
+import { join } from 'path'
 
-interface PendingRequest {
-  resolve: (value: any) => void;
-  reject: (reason: any) => void;
+interface JsonRpcRequest {
+  jsonrpc: '2.0'
+  id: number
+  method: string
+  params?: Record<string, unknown>
 }
 
-type ProgressCallback = (method: string, params: any) => void;
+interface JsonRpcNotification {
+  jsonrpc: '2.0'
+  method: string
+  params?: Record<string, unknown>
+}
 
-export class PythonBridge {
-  private proc: ChildProcess | null = null;
-  private pending = new Map<number, PendingRequest>();
-  private nextId = 1;
-  private buffer = '';
-  private progressCallbacks: ProgressCallback[] = [];
-  private ready = false;
-  private readyResolve: (() => void) | null = null;
-  private restartAttempts = 0;
-  private maxRestarts = 3;
+interface JsonRpcResponse {
+  jsonrpc: '2.0'
+  id: number
+  result?: unknown
+  error?: { code: number; message: string; data?: unknown }
+}
 
-  async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.readyResolve = resolve;
+type JsonRpcMessage = JsonRpcRequest | JsonRpcResponse | JsonRpcNotification
 
-      const daisyreachPath = process.env.DAISYREACH_PATH || path.resolve(__dirname, '../../..');
+interface PendingRequest {
+  resolve: (value: unknown) => void
+  reject: (reason: Error) => void
+  timer: NodeJS.Timeout
+}
 
-      // Find Python executable
-      const pythonCmd = process.env.DAISYREACH_PYTHON || 'python3';
+export class PythonBridge extends EventEmitter {
+  private proc: ChildProcess | null = null
+  private pending = new Map<number, PendingRequest>()
+  private nextId = 1
+  private buffer = ''
+  private _ready = false
 
-      this.proc = spawn(pythonCmd, ['-m', 'cli.bridge'], {
-        cwd: daisyreachPath,
+  get ready(): boolean {
+    return this._ready
+  }
+
+  /**
+   * Locate the Python bridge executable.
+   * In development: uses python3 to run the bridge module directly.
+   * In production: uses the PyInstaller-built binary from resources/.
+   */
+  private getBridgeCommand(): { command: string; args: string[]; env: Record<string, string> } {
+    const daisyreachPath = process.env.DAISYREACH_PATH || join(app.getAppPath(), '..', 'DaisyReach')
+
+    if (process.env.NODE_ENV === 'development') {
+      return {
+        command: 'python3',
+        args: ['-m', 'cli.bridge'],
         env: {
           ...process.env,
-          DAISYREACH_PATH: daisyreachPath,
-          PYTHONUNBUFFERED: '1', // ensure unbuffered stdout/stderr
+          PYTHONPATH: daisyreachPath,
+          PYTHONIOENCODING: 'utf-8',
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      if (!this.proc.stdout || !this.proc.stderr || !this.proc.stdin) {
-        reject(new Error('Failed to spawn Python bridge: missing stdio'));
-        return;
       }
-
-      this.proc.stdout.on('data', (data: Buffer) => {
-        this.handleData(data.toString());
-      });
-
-      this.proc.stderr.on('data', (data: Buffer) => {
-        const msg = data.toString().trim();
-        if (msg) console.log(`[bridge:stderr] ${msg}`);
-      });
-
-      this.proc.on('exit', (code) => {
-        console.log(`[bridge] Python process exited with code ${code}`);
-        this.ready = false;
-        this.proc = null;
-
-        // Reject all pending requests
-        for (const [id, req] of this.pending) {
-          req.reject(new Error(`Python bridge exited (code ${code})`));
-        }
-        this.pending.clear();
-      });
-
-      this.proc.on('error', (err) => {
-        console.error(`[bridge] Python process error:`, err);
-        reject(err);
-      });
-
-      // Timeout for startup
-      setTimeout(() => {
-        if (!this.ready) {
-          reject(new Error('Python bridge failed to start within 10s'));
-        }
-      }, 10000);
-    });
-  }
-
-  async call(method: string, params: Record<string, any> = {}): Promise<any> {
-    if (!this.proc || !this.proc.stdin) {
-      throw new Error('Python bridge not running');
     }
 
-    const id = this.nextId++;
-    const request = {
-      jsonrpc: '2.0',
-      id,
-      method,
-      params,
-    };
+    // Production: use PyInstaller binary
+    const bridgePath = process.platform === 'win32'
+      ? join(process.resourcesPath, 'daisyreach-bridge.exe')
+      : join(process.resourcesPath, 'daisyreach-bridge')
 
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.proc!.stdin!.write(JSON.stringify(request) + '\n');
-    });
+    return {
+      command: bridgePath,
+      args: [],
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+      },
+    }
   }
 
-  onProgress(callback: ProgressCallback): () => void {
-    this.progressCallbacks.push(callback);
-    return () => {
-      this.progressCallbacks = this.progressCallbacks.filter(cb => cb !== callback);
-    };
-  }
+  async start(): Promise<void> {
+    const { command, args, env } = this.getBridgeCommand()
+    console.log(`[bridge] Starting: ${command} ${args.join(' ')}`)
 
-  isReady(): boolean {
-    return this.ready;
+    this.proc = spawn(command, args, {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: process.env.DAISYREACH_PATH || app.getAppPath(),
+    })
+
+    this.proc.stdout?.on('data', (data: Buffer) => {
+      this.buffer += data.toString('utf-8')
+      this.processBuffer()
+    })
+
+    this.proc.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString('utf-8').trim()
+      if (text) {
+        console.log(`[bridge:stderr] ${text}`)
+        this.emit('stderr', text)
+      }
+    })
+
+    this.proc.on('exit', (code, signal) => {
+      console.log(`[bridge] Exited with code ${code}, signal ${signal}`)
+      this._ready = false
+      this.emit('exit', { code, signal })
+
+      // Reject all pending requests
+      for (const [id, pending] of this.pending) {
+        clearTimeout(pending.timer)
+        pending.reject(new Error(`Python bridge exited (${code})`))
+        this.pending.delete(id)
+      }
+    })
+
+    this.proc.on('error', (err) => {
+      console.error(`[bridge] Error:`, err)
+      this._ready = false
+      this.emit('error', err)
+    })
+
+    // Wait for bridge to signal readiness
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Bridge startup timeout')), 15000)
+      const onReady = (msg: JsonRpcNotification) => {
+        if (msg.method === 'bridge.ready') {
+          clearTimeout(timer)
+          this.off('notification', onReady)
+          this._ready = true
+          resolve()
+        }
+      }
+      this.on('notification', onReady as (...args: unknown[]) => void)
+    })
   }
 
   async stop(): Promise<void> {
     if (this.proc) {
-      this.proc.stdin?.end();
-      // Give it a moment to exit gracefully
+      this.proc.kill('SIGTERM')
+      // Give it 3 seconds to exit gracefully
       await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          this.proc?.kill();
-          resolve();
-        }, 3000);
-        this.proc!.on('exit', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
-      this.proc = null;
-      this.ready = false;
+        const timer = setTimeout(() => {
+          this.proc?.kill('SIGKILL')
+          resolve()
+        }, 3000)
+        this.proc?.on('exit', () => {
+          clearTimeout(timer)
+          resolve()
+        })
+      })
+      this.proc = null
     }
   }
 
-  private handleData(chunk: string): void {
-    this.buffer += chunk;
+  /**
+   * Call a method on the Python bridge. Returns the result.
+   * Progress notifications are emitted via the 'notification' event.
+   */
+  async call(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    if (!this.proc || !this.proc.stdin) {
+      throw new Error('Python bridge not running')
+    }
 
-    // Process complete lines
-    const lines = this.buffer.split('\n');
-    // Last element may be incomplete
-    this.buffer = lines.pop() || '';
+    const id = this.nextId++
+    const request: JsonRpcRequest = {
+      jsonrpc: '2.0',
+      id,
+      method,
+      params: params ?? {},
+    }
+
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`Timeout calling ${method}`))
+      }, 300_000) // 5 minute default timeout for long-running operations
+
+      this.pending.set(id, { resolve, reject, timer })
+      this.proc!.stdin!.write(JSON.stringify(request) + '\n')
+    })
+  }
+
+  private processBuffer(): void {
+    // JSON-RPC messages are newline-delimited
+    const lines = this.buffer.split('\n')
+    // Last element might be incomplete
+    this.buffer = lines.pop() || ''
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+      const trimmed = line.trim()
+      if (!trimmed) continue
 
       try {
-        const msg = JSON.parse(trimmed);
+        const msg: JsonRpcMessage = JSON.parse(trimmed)
 
-        // Notification (no id) — progress event or bridge.ready
-        if (!msg.id && msg.method) {
-          if (msg.method === 'bridge.ready') {
-            this.ready = true;
-            this.restartAttempts = 0;
-            this.readyResolve?.();
-            this.readyResolve = null;
-            console.log('[bridge] Ready');
-          } else {
-            // Progress notification
-            for (const cb of this.progressCallbacks) {
-              try {
-                cb(msg.method, msg.params);
-              } catch (err) {
-                console.error('[bridge] Progress callback error:', err);
-              }
-            }
-          }
-          continue;
-        }
-
-        // Response (has id)
-        if (msg.id !== undefined) {
-          const pending = this.pending.get(msg.id);
+        if ('id' in msg && (msg as JsonRpcResponse).result !== undefined || (msg as JsonRpcResponse).error) {
+          // This is a response
+          const response = msg as JsonRpcResponse
+          const pending = this.pending.get(response.id)
           if (pending) {
-            this.pending.delete(msg.id);
-            if (msg.error) {
-              pending.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+            clearTimeout(pending.timer)
+            this.pending.delete(response.id)
+            if (response.error) {
+              pending.reject(new Error(response.error.message))
             } else {
-              pending.resolve(msg.result);
+              pending.resolve(response.result)
             }
           }
+        } else if ('id' in msg && !('result' in msg) && !('error' in msg)) {
+          // Request from Python (ignore for now)
+        } else if (!('id' in msg)) {
+          // Notification from Python
+          this.emit('notification', msg)
         }
       } catch (err) {
-        console.error(`[bridge] JSON parse error: ${trimmed.substring(0, 100)}`);
+        console.warn(`[bridge] Failed to parse line: ${trimmed}`)
       }
     }
   }

@@ -1,189 +1,110 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import Leads from './screens/Leads';
-import Search from './screens/Search';
-import LeadDetail from './screens/LeadDetail';
-import Queue from './screens/Queue';
-import Runs from './screens/Runs';
-import Studio from './screens/Studio';
-import CommandPalette from './components/CommandPalette';
-import {
-  MailScreen,
-  SettingsScreen,
-} from './screens/Placeholder';
+import { useState, useEffect } from 'react'
+import Leads from './screens/Leads'
 
-type Screen = 'leads' | 'search' | 'queue' | 'studio' | 'mail' | 'runs' | 'settings';
+type Screen = 'search' | 'queue' | 'leads' | 'studio' | 'mail' | 'runs' | 'settings'
 
-interface NavItem {
-  id: Screen;
-  label: string;
-  icon: string;
-  shortcut?: string;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { id: 'leads', label: 'Leads', icon: '📊' },
-  { id: 'search', label: 'Search', icon: '🔍' },
-  { id: 'queue', label: 'Queue', icon: '📋' },
-  { id: 'studio', label: 'Studio', icon: '🎨' },
-  { id: 'mail', label: 'Mail', icon: '✉️' },
-  { id: 'runs', label: 'Runs', icon: '▶️' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' },
-];
-
-function ScreenContent({
-  screen,
-  leadDetailId,
-  onCloseLeadDetail,
-}: {
-  screen: Screen;
-  leadDetailId: string | null;
-  onCloseLeadDetail: () => void;
-}) {
-  // Lead detail overlay takes priority
-  if (leadDetailId) {
-    return <LeadDetail businessId={leadDetailId} onBack={onCloseLeadDetail} />;
-  }
-
-  switch (screen) {
-    case 'leads':
-      return <Leads onSelectLead={(id) => setLeadDetailId(id)} />;
-    case 'search':
-      return <Search onLeadSelected={(id) => { setLeadDetailId(id); setActiveScreen('search'); }} />;
-    case 'queue':
-      return <Queue />;
-    case 'studio':
-      return <Studio />;
-    case 'mail':
-      return <MailScreen />;
-    case 'runs':
-      return <Runs />;
-    case 'settings':
-      return <SettingsScreen />;
-  }
-}
+const navItems: { id: Screen; label: string; icon: string }[] = [
+  { id: 'search', label: 'Search', icon: '⌕' },
+  { id: 'queue', label: 'Queue', icon: '☰' },
+  { id: 'leads', label: 'Leads', icon: '◉' },
+  { id: 'studio', label: 'Studio', icon: '◈' },
+  { id: 'mail', label: 'Mail', icon: '✉' },
+  { id: 'runs', label: 'Runs', icon: '▹' },
+]
 
 export default function App() {
-  const [activeScreen, setActiveScreen] = useState<Screen>('leads');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [leadDetailId, setLeadDetailId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<Screen>('leads')
+  const [bridgeReady, setBridgeReady] = useState(false)
+  const [bridgeLoading, setBridgeLoading] = useState(true)
 
-  // Cmd+K to open command palette
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setCommandPaletteOpen((v) => !v);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
+    // Check bridge status
+    window.bridge.bridgeStatus().then((status) => {
+      setBridgeReady(status.ready)
+      setBridgeLoading(false)
+    }).catch(() => {
+      setBridgeLoading(false)
+    })
+  }, [])
 
-  // Navigate from command palette
-  const handleNavigate = useCallback((screen: string) => {
-    if (NAV_ITEMS.some((item) => item.id === screen)) {
-      setActiveScreen(screen as Screen);
+  const renderScreen = () => {
+    switch (screen) {
+      case 'leads': return <Leads />
+      default: return <PlaceholderScreen name={screen} />
     }
-  }, []);
-
-  // Close lead detail and go back to leads
-  const handleCloseLeadDetail = useCallback(() => {
-    setLeadDetailId(null);
-    setActiveScreen('leads');
-  }, []);
+  }
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100">
+    <div className="flex h-screen">
       {/* Sidebar */}
-      <aside
-        className={`${
-          sidebarCollapsed ? 'w-14' : 'w-48'
-        } flex flex-col bg-slate-900 border-r border-slate-800 transition-all duration-200`}
-      >
-        {/* Brand */}
-        <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'px-4'} h-12 border-b border-slate-800`}>
-          {!sidebarCollapsed && (
-            <span className="text-sm font-semibold text-white tracking-tight">DaisyReach</span>
-          )}
-          {sidebarCollapsed && (
-            <span className="text-sm font-semibold text-white">D</span>
-          )}
+      <aside className="w-48 bg-neutral-900 border-r border-neutral-800 flex flex-col shrink-0">
+        <div className="p-4 border-b border-neutral-800">
+          <h1 className="text-lg font-bold tracking-tight text-white">DaisyReach</h1>
+          <p className="text-xs text-neutral-500 mt-0.5">v0.1.0</p>
         </div>
 
-        {/* Nav items */}
         <nav className="flex-1 py-2">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => {
-                setActiveScreen(item.id);
-                setLeadDetailId(null);
-              }}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-sm transition-colors ${
-                sidebarCollapsed ? 'justify-center' : ''
-              } ${
-                activeScreen === item.id && !leadDetailId
-                  ? 'bg-blue-500/10 text-blue-400 border-r-2 border-blue-400'
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+              onClick={() => setScreen(item.id)}
+              className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-3 transition-colors ${
+                screen === item.id
+                  ? 'bg-neutral-800 text-white'
+                  : 'text-neutral-400 hover:bg-neutral-800/50 hover:text-neutral-200'
               }`}
-              title={item.label}
             >
-              <span className="text-base flex-shrink-0">{item.icon}</span>
-              {!sidebarCollapsed && <span>{item.label}</span>}
+              <span className="text-base">{item.icon}</span>
+              {item.label}
             </button>
           ))}
         </nav>
 
-        {/* Command palette hint + collapse toggle */}
-        <div>
-          {!sidebarCollapsed && (
-            <button
-              onClick={() => setCommandPaletteOpen(true)}
-              className="w-full flex items-center gap-3 px-3 py-2 text-sm text-slate-500 hover:bg-slate-800 hover:text-slate-300 transition-colors"
-            >
-              <span className="text-base flex-shrink-0">⌘</span>
-              <span>Command...</span>
-              <span className="ml-auto text-xs text-slate-600">⌘K</span>
-            </button>
-          )}
+        {/* Bridge status */}
+        <div className="p-4 border-t border-neutral-800">
           <button
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className="w-full flex items-center justify-center h-10 border-t border-slate-800 text-slate-500 hover:text-slate-300 transition-colors"
-            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            onClick={() => setScreen('settings')}
+            className="w-full text-left text-sm text-neutral-400 hover:text-neutral-200 transition-colors"
           >
-            {sidebarCollapsed ? '→' : '←'}
+            ⚙ Settings
           </button>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 flex flex-col overflow-hidden pb-6">
-        <ScreenContent
-          screen={activeScreen}
-          leadDetailId={leadDetailId}
-          onCloseLeadDetail={handleCloseLeadDetail}
-        />
-      </main>
-
-      {/* Status bar */}
-      <footer className="fixed bottom-0 right-0 left-0 flex items-center justify-between px-4 h-6 bg-slate-900 border-t border-slate-800 text-xs text-slate-500">
-        <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
-            Python
+      <main className="flex-1 flex flex-col min-w-0">
+        {/* Status bar */}
+        <div className="h-7 bg-neutral-900 border-b border-neutral-800 flex items-center px-4 text-xs text-neutral-500 gap-4 shrink-0">
+          <span className="flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${bridgeReady ? 'bg-green-500' : bridgeLoading ? 'bg-yellow-500' : 'bg-red-500'}`} />
+            Python {bridgeReady ? '●' : bridgeLoading ? '◌' : '✗'}
           </span>
-          <span className="text-slate-600">⌘K</span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-neutral-600" />
+            Brave —
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-neutral-600" />
+            MiniMax —
+          </span>
         </div>
-        <span>DaisyReach Desktop v0.1.0</span>
-      </footer>
 
-      {/* Command Palette */}
-      <CommandPalette
-        open={commandPaletteOpen}
-        onClose={() => setCommandPaletteOpen(false)}
-        onNavigate={handleNavigate}
-      />
+        {/* Screen content */}
+        <div className="flex-1 overflow-auto">
+          {renderScreen()}
+        </div>
+      </main>
     </div>
-  );
+  )
+}
+
+function PlaceholderScreen({ name }: { name: string }) {
+  return (
+    <div className="flex items-center justify-center h-full text-neutral-500">
+      <div className="text-center">
+        <p className="text-4xl mb-2">{name === 'search' ? '⌕' : name === 'queue' ? '☰' : name === 'studio' ? '◈' : name === 'mail' ? '✉' : name === 'runs' ? '▹' : '⚙'}</p>
+        <p className="text-sm">{name.charAt(0).toUpperCase() + name.slice(1)} — coming soon</p>
+      </div>
+    </div>
+  )
 }
